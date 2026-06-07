@@ -1,6 +1,8 @@
 import { FormEvent, useEffect, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { SacredSymbol } from "@/components/SacredSymbol";
+import { MetricasDashboard } from "@/components/MetricasDashboard";
+import { Printer } from "lucide-react";
 
 type Gira = {
   id: string;
@@ -46,6 +48,8 @@ export function AdminPage() {
   const [tipoNovo, setTipoNovo] = useState("");
   const [ativaNova, setAtivaNova] = useState(true);
   const [criandoGira, setCriandoGira] = useState(false);
+
+  const [busca, setBusca] = useState("");
 
   // lista de códigos válidos
   const CODIGOS_ADMIN = ["terreiro2025", "rompemato", "mainha"];
@@ -114,6 +118,7 @@ export function AdminPage() {
         return;
       }
 
+      setBusca("");
       setCarregandoAgendados(true);
       setErro(null);
 
@@ -178,6 +183,64 @@ export function AdminPage() {
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
+  }
+
+  function imprimirLista() {
+    if (!giraSelecionada || agendados.length === 0) return;
+
+    const data = formatarDataBr(giraSelecionada.data);
+    const linhas = agendados
+      .map(
+        (a, i) => `
+        <tr>
+          <td>${i + 1}</td>
+          <td>${a.nome}</td>
+          <td style="text-align:center">${a.primeira_visita ? "Sim" : "Não"}</td>
+          <td>${a.telefone ?? "—"}</td>
+          <td>${a.observacoes ?? ""}</td>
+          <td style="text-align:center; font-size:16px">&#9744;</td>
+        </tr>`
+      )
+      .join("");
+
+    const html = `<!DOCTYPE html><html lang="pt-BR"><head>
+      <meta charset="utf-8">
+      <title>Lista — ${giraSelecionada.titulo}</title>
+      <style>
+        body { font-family: Arial, sans-serif; font-size: 11px; margin: 24px; color: #222; }
+        h1 { font-size: 16px; margin: 0 0 2px; }
+        .meta { font-size: 11px; color: #555; margin-bottom: 14px; }
+        table { width: 100%; border-collapse: collapse; }
+        th { background: #f3ede4; text-align: left; padding: 5px 8px; border: 1px solid #ccc; font-size: 10px; text-transform: uppercase; letter-spacing: .4px; }
+        td { padding: 5px 8px; border: 1px solid #ddd; vertical-align: top; }
+        tr:nth-child(even) td { background: #fafaf8; }
+        .footer { margin-top: 16px; font-size: 10px; color: #999; }
+        @media print { body { margin: 12px; } button { display: none; } }
+      </style>
+    </head><body>
+      <h1>${giraSelecionada.titulo}${giraSelecionada.tipo ? ` — ${giraSelecionada.tipo}` : ""}</h1>
+      <div class="meta">Data: ${data} &nbsp;|&nbsp; Total: ${agendados.length} agendados &nbsp;|&nbsp; Capacidade: ${giraSelecionada.capacidade}</div>
+      <table>
+        <thead>
+          <tr>
+            <th style="width:30px">#</th>
+            <th>Nome</th>
+            <th style="width:60px">1ª visita</th>
+            <th style="width:110px">Telefone</th>
+            <th>Observações</th>
+            <th style="width:55px">Presente</th>
+          </tr>
+        </thead>
+        <tbody>${linhas}</tbody>
+      </table>
+      <div class="footer">Terreiro de Umbanda Luzeiro Santo &mdash; impresso em ${new Date().toLocaleString("pt-BR")}</div>
+      <script>window.onload = () => window.print();<\/script>
+    </body></html>`;
+
+    const janela = window.open("", "_blank");
+    if (!janela) return;
+    janela.document.write(html);
+    janela.document.close();
   }
 
   function handleLoginAdmin(e: FormEvent) {
@@ -340,6 +403,14 @@ export function AdminPage() {
     }
   }
 
+  const agendadosFiltrados = busca.trim()
+    ? agendados.filter(
+        (a) =>
+          a.nome.toLowerCase().includes(busca.toLowerCase()) ||
+          (a.telefone ?? "").includes(busca)
+      )
+    : agendados;
+
   // tela de login da equipe, com estética Tuluz
   if (!autorizado) {
     return (
@@ -414,6 +485,9 @@ export function AdminPage() {
             <div className="sacred-divider max-w-xs mx-auto mt-4" />
           </div>
         </header>
+
+        {/* painel de métricas (visão histórica/agregada) */}
+        {!carregandoGiras && <MetricasDashboard giras={giras} />}
 
         {/* card de filtros / info da gira + edição */}
         <section className="bg-card rounded-xl shadow-md border border-border/60 p-6 sm:p-8 relative overflow-hidden">
@@ -669,9 +743,36 @@ export function AdminPage() {
 
         {/* tabela de agendados */}
         <section className="bg-card rounded-xl shadow-md border border-border/60 p-4 sm:p-6">
-          <h3 className="text-base sm:text-lg font-semibold text-foreground mb-4">
-            Agendados da gira selecionada
-          </h3>
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
+            <h3 className="text-base sm:text-lg font-semibold text-foreground">
+              Agendados da gira selecionada
+              {agendados.length > 0 && (
+                <span className="ml-2 text-sm font-normal text-muted-foreground">
+                  ({agendadosFiltrados.length}/{agendados.length})
+                </span>
+              )}
+            </h3>
+
+            {agendados.length > 0 && (
+              <div className="flex flex-col sm:flex-row gap-2">
+                <input
+                  type="search"
+                  placeholder="Buscar por nome ou telefone..."
+                  className="w-full sm:w-60 border rounded-md px-3 py-1.5 text-sm"
+                  value={busca}
+                  onChange={(e) => setBusca(e.target.value)}
+                />
+                <button
+                  type="button"
+                  onClick={imprimirLista}
+                  className="inline-flex items-center justify-center gap-2 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-muted/60 transition-colors whitespace-nowrap"
+                >
+                  <Printer className="h-3.5 w-3.5" />
+                  Imprimir lista
+                </button>
+              </div>
+            )}
+          </div>
 
           {carregandoGiras || carregandoAgendados ? (
             <p className="text-sm text-muted-foreground">
@@ -680,6 +781,10 @@ export function AdminPage() {
           ) : agendados.length === 0 ? (
             <p className="text-sm text-muted-foreground">
               Nenhum agendamento encontrado para esta gira.
+            </p>
+          ) : agendadosFiltrados.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              Nenhum resultado para "{busca}".
             </p>
           ) : (
             <div className="overflow-x-auto max-h-[500px]">
@@ -695,7 +800,7 @@ export function AdminPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {agendados.map((a) => (
+                  {agendadosFiltrados.map((a) => (
                     <tr key={a.id} className="border-b last:border-0">
                       <td className="p-2">{a.nome}</td>
                       <td className="p-2">{a.primeira_visita ? "Sim" : "Não"}</td>
