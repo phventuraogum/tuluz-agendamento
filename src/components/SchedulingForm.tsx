@@ -7,6 +7,7 @@ type Gira = {
   data: string;
   titulo: string;
   capacidade: number;
+  ocupadas?: number | null;
 };
 
 // Conta os agendados de uma gira. Prioriza a função RPC `vagas_gira`, que
@@ -81,8 +82,13 @@ export function SchedulingForm() {
       const giraAtiva = giras[0] as Gira;
       setGira(giraAtiva);
 
-      // conta quantos já agendaram
-      const ocupadas = await contarOcupadas(giraAtiva.id);
+      // Conta quantos já agendaram. Preferimos o contador `ocupadas` da própria
+      // gira (mantido por trigger): o público pode lê-lo e ele chega ao vivo via
+      // Realtime de `giras`. Se a coluna ainda não existir, cai no fallback.
+      const ocupadas =
+        typeof giraAtiva.ocupadas === "number"
+          ? giraAtiva.ocupadas
+          : await contarOcupadas(giraAtiva.id);
 
       if (ocupadas === null) {
         setErro("Não foi possível carregar as vagas restantes.");
@@ -96,20 +102,16 @@ export function SchedulingForm() {
 
     carregarDados();
 
-    // Inscrição em tempo real: recarrega quando a gira muda (capacidade/ativa)
-    // OU quando alguém agenda (contagem de vagas ao vivo).
+    // Inscrição em tempo real na tabela `giras`. Toda mudança relevante para o
+    // público (capacidade, gira ativa e o contador `ocupadas` atualizado por
+    // trigger a cada agendamento) chega por aqui — mantendo a contagem de vagas
+    // ao vivo. Não assinamos `agendamentos` porque, com o RLS, o público não a
+    // lê e o Realtime dessa tabela não entregaria eventos para o anon.
     const channel = supabase
       .channel("giras-form-realtime")
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "giras" },
-        () => {
-          carregarDados();
-        }
-      )
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "agendamentos" },
         () => {
           carregarDados();
         }
