@@ -1,8 +1,9 @@
 import { FormEvent, useEffect, useState } from "react";
+import type { Session } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabaseClient";
 import { SacredSymbol } from "@/components/SacredSymbol";
 import { MetricasDashboard } from "@/components/MetricasDashboard";
-import { Printer } from "lucide-react";
+import { LogOut, Printer } from "lucide-react";
 
 type Gira = {
   id: string;
@@ -33,8 +34,13 @@ export function AdminPage() {
   const [erro, setErro] = useState<string | null>(null);
   const [mensagem, setMensagem] = useState<string | null>(null);
 
-  const [autorizado, setAutorizado] = useState(false);
-  const [codigoDigitado, setCodigoDigitado] = useState("");
+  // Autenticação via Supabase Auth (substitui os códigos fixos no bundle)
+  const [session, setSession] = useState<Session | null>(null);
+  const [checandoSessao, setChecandoSessao] = useState(true);
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginSenha, setLoginSenha] = useState("");
+  const [loginErro, setLoginErro] = useState<string | null>(null);
+  const [entrando, setEntrando] = useState(false);
 
   const [dataEditada, setDataEditada] = useState("");
   const [capacidadeEditada, setCapacidadeEditada] = useState("");
@@ -51,14 +57,27 @@ export function AdminPage() {
 
   const [busca, setBusca] = useState("");
 
-  // lista de códigos válidos
-  const CODIGOS_ADMIN = ["terreiro2025", "rompemato", "mainha"];
-
   function formatarDataBr(isoDate: string) {
     const onlyDate = isoDate.split("T")[0];
     const [year, month, day] = onlyDate.split("-");
     return `${day}/${month}/${year}`;
   }
+
+  // sessão de autenticação
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+      setChecandoSessao(false);
+    });
+
+    const { data: sub } = supabase.auth.onAuthStateChange((_evento, novaSessao) => {
+      setSession(novaSessao);
+    });
+
+    return () => sub.subscription.unsubscribe();
+  }, []);
+
+  const autorizado = !!session;
 
   // carregar giras
   useEffect(() => {
@@ -243,17 +262,28 @@ export function AdminPage() {
     janela.document.close();
   }
 
-  function handleLoginAdmin(e: FormEvent) {
+  async function handleLoginAdmin(e: FormEvent) {
     e.preventDefault();
+    setLoginErro(null);
+    setEntrando(true);
 
-    const codigoLimpo = codigoDigitado.trim();
+    const { error } = await supabase.auth.signInWithPassword({
+      email: loginEmail.trim(),
+      password: loginSenha,
+    });
 
-    if (CODIGOS_ADMIN.includes(codigoLimpo)) {
-      setAutorizado(true);
-      setCodigoDigitado("");
+    if (error) {
+      console.error(error);
+      setLoginErro("E-mail ou senha inválidos.");
     } else {
-      alert("Código incorreto.");
+      setLoginSenha("");
     }
+
+    setEntrando(false);
+  }
+
+  async function handleLogout() {
+    await supabase.auth.signOut();
   }
 
   async function handleSalvarConfig(e: FormEvent) {
@@ -411,7 +441,16 @@ export function AdminPage() {
       )
     : agendados;
 
-  // tela de login da equipe, com estética Tuluz
+  // enquanto verifica se já existe sessão salva
+  if (checandoSessao) {
+    return (
+      <main className="min-h-screen bg-background flex items-center justify-center px-4">
+        <p className="text-sm text-muted-foreground">Verificando acesso...</p>
+      </main>
+    );
+  }
+
+  // tela de login da equipe, com estética Tuluz (agora via Supabase Auth)
   if (!autorizado) {
     return (
       <main className="min-h-screen bg-background flex items-center justify-center px-4">
@@ -438,29 +477,52 @@ export function AdminPage() {
             Área da equipe – Agendamentos
           </h2>
           <p className="text-sm text-muted-foreground text-center mb-6">
-            Digite o código interno do terreiro para acessar a lista de agendados.
+            Entre com o e-mail e a senha da equipe para acessar a lista de agendados.
           </p>
 
           <form onSubmit={handleLoginAdmin} className="space-y-4">
             <div>
-              <label className="block text-sm font-medium mb-1" htmlFor="codigo">
-                Código da equipe
+              <label className="block text-sm font-medium mb-1" htmlFor="login-email">
+                E-mail
               </label>
               <input
-                id="codigo"
-                type="password"
+                id="login-email"
+                type="email"
+                autoComplete="email"
                 className="w-full border rounded-md px-3 py-2 text-sm"
-                placeholder="Informe o código interno"
-                value={codigoDigitado}
-                onChange={(e) => setCodigoDigitado(e.target.value)}
+                placeholder="equipe@terreiro.com"
+                value={loginEmail}
+                onChange={(e) => setLoginEmail(e.target.value)}
+                required
               />
             </div>
 
+            <div>
+              <label className="block text-sm font-medium mb-1" htmlFor="login-senha">
+                Senha
+              </label>
+              <input
+                id="login-senha"
+                type="password"
+                autoComplete="current-password"
+                className="w-full border rounded-md px-3 py-2 text-sm"
+                placeholder="Sua senha"
+                value={loginSenha}
+                onChange={(e) => setLoginSenha(e.target.value)}
+                required
+              />
+            </div>
+
+            {loginErro && (
+              <p className="text-sm text-red-600 text-center">{loginErro}</p>
+            )}
+
             <button
               type="submit"
-              className="w-full py-2.5 rounded-md bg-primary text-primary-foreground font-medium text-sm"
+              disabled={entrando}
+              className="w-full py-2.5 rounded-md bg-primary text-primary-foreground font-medium text-sm disabled:opacity-60"
             >
-              Entrar
+              {entrando ? "Entrando..." : "Entrar"}
             </button>
           </form>
         </div>
@@ -473,7 +535,15 @@ export function AdminPage() {
     <main className="min-h-screen bg-background px-4 py-10">
       <div className="max-w-6xl mx-auto space-y-8">
         {/* cabeçalho Tuluz */}
-        <header className="text-center">
+        <header className="relative text-center">
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="absolute right-0 top-0 inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-muted/60 transition-colors"
+          >
+            <LogOut className="h-3.5 w-3.5" />
+            Sair
+          </button>
           <div className="flex flex-col items-center">
             <SacredSymbol />
             <h1 className="mt-4 text-3xl sm:text-4xl font-bold text-primary font-playfair tracking-wide">

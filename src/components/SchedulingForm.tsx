@@ -9,6 +9,29 @@ type Gira = {
   capacidade: number;
 };
 
+// Conta os agendados de uma gira. Prioriza a função RPC `vagas_gira`, que
+// funciona mesmo com o RLS bloqueando a leitura direta da tabela de
+// agendamentos (dados pessoais). Se a função ainda não existir no banco,
+// cai para a contagem direta — assim o formulário funciona antes e depois
+// de aplicar o RLS.
+async function contarOcupadas(giraId: string): Promise<number | null> {
+  const { data, error } = await supabase.rpc("vagas_gira", {
+    p_gira_id: giraId,
+  });
+  if (!error && typeof data === "number") return data;
+
+  const { count, error: countError } = await supabase
+    .from("agendamentos")
+    .select("id", { count: "exact", head: true })
+    .eq("gira_id", giraId);
+
+  if (countError) {
+    console.error(countError);
+    return null;
+  }
+  return count ?? 0;
+}
+
 export function SchedulingForm() {
   const [gira, setGira] = useState<Gira | null>(null);
   const [vagasUsadas, setVagasUsadas] = useState<number | null>(null);
@@ -59,32 +82,36 @@ export function SchedulingForm() {
       setGira(giraAtiva);
 
       // conta quantos já agendaram
-      const { count, error: countError } = await supabase
-        .from("agendamentos")
-        .select("id", { count: "exact", head: true })
-        .eq("gira_id", giraAtiva.id);
+      const ocupadas = await contarOcupadas(giraAtiva.id);
 
-      if (countError) {
-        console.error(countError);
+      if (ocupadas === null) {
         setErro("Não foi possível carregar as vagas restantes.");
         setLoadingGira(false);
         return;
       }
 
-      setVagasUsadas(count ?? 0);
+      setVagasUsadas(ocupadas);
       setLoadingGira(false);
     };
 
     carregarDados();
 
-    // Inscrição em tempo real para mudanças na tabela de giras
+    // Inscrição em tempo real: recarrega quando a gira muda (capacidade/ativa)
+    // OU quando alguém agenda (contagem de vagas ao vivo).
     const channel = supabase
       .channel("giras-form-realtime")
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "giras" },
         () => {
-          carregarDados(); // Recarrega os dados quando qualquer gira mudar
+          carregarDados();
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "agendamentos" },
+        () => {
+          carregarDados();
         }
       )
       .subscribe();
@@ -94,10 +121,21 @@ export function SchedulingForm() {
     };
   }, []);
 
+  // A partir de quantas vagas restantes mostramos o aviso de "últimas vagas"
+  const LIMITE_ULTIMAS_VAGAS = 5;
+
   const capacidade = gira?.capacidade ?? 0;
   const vagasRestantes =
     vagasUsadas !== null && gira ? Math.max(capacidade - vagasUsadas, 0) : null;
   const lotado = vagasRestantes !== null && vagasRestantes <= 0;
+  const quaseLotado =
+    vagasRestantes !== null &&
+    vagasRestantes > 0 &&
+    vagasRestantes <= LIMITE_ULTIMAS_VAGAS;
+  const pctOcupacao =
+    vagasUsadas !== null && capacidade > 0
+      ? Math.min(Math.round((vagasUsadas / capacidade) * 100), 100)
+      : 0;
 
   function normalizarNome(nomeBruto: string): string {
     return nomeBruto
@@ -158,7 +196,9 @@ export function SchedulingForm() {
     const nomeNormalizado = normalizarNome(nome);
     // Normalização simples para garantir que a busca seja consistente com o que é salvo
 
-    // verifica duplicidade por telefone na mesma gira
+    // Pré-checagem de duplicidade por telefone na mesma gira.
+    // Não é fatal: se o RLS bloquear esta leitura, seguимos em frente e a
+    // garantia real fica com o indice unico no banco (erro 23505 tratado abaixo).
     const { data: duplicados, error: dupError } = await supabase
       .from("agendamentos")
       .select("id")
@@ -167,13 +207,8 @@ export function SchedulingForm() {
       .limit(1);
 
     if (dupError) {
-      console.error(dupError);
-      setErro("Não foi possível verificar seu agendamento. Tente novamente em instantes.");
-      setSubmitting(false);
-      return;
-    }
-
-    if (duplicados && duplicados.length > 0) {
+      console.error("Pré-checagem de duplicidade indisponível (seguindo):", dupError);
+    } else if (duplicados && duplicados.length > 0) {
       setErro(
         "Já encontramos um agendamento com este telefone para esta gira. Caso precise ajustar algo, por favor fale com a organização."
       );
@@ -194,9 +229,32 @@ export function SchedulingForm() {
 
     if (insertError) {
       console.error(insertError);
-      setErro(
-        "Não foi possível concluir seu agendamento. Verifique se já não existe um agendamento em seu nome para esta gira."
-      );
+
+      const codigo = (insertError as { code?: string }).code ?? "";
+      const msg = `${insertError.message ?? ""} ${
+        (insertError as { details?: string }).details ?? ""
+      }`;
+
+      if (msg.includes("CAPACIDADE_ATINGIDA")) {
+        // Perdeu a disputa pela última vaga: o banco barrou. Recarrega a contagem real.
+        setErro(
+          "As vagas para esta gira foram preenchidas enquanto você agendava. Acompanhe os próximos avisos nos canais oficiais do terreiro."
+        );
+        const ocupadas = await contarOcupadas(gira.id);
+        setVagasUsadas(ocupadas ?? capacidade);
+      } else if (msg.includes("GIRA_INATIVA") || msg.includes("GIRA_INEXISTENTE")) {
+        setErro("Esta gira não está mais disponível para agendamento.");
+      } else if (codigo === "23505") {
+        // Índice único no banco pegou a duplicidade (telefone já agendado nesta gira)
+        setErro(
+          "Já encontramos um agendamento com este telefone para esta gira. Caso precise ajustar algo, por favor fale com a organização."
+        );
+      } else {
+        setErro(
+          "Não foi possível concluir seu agendamento. Verifique se já não existe um agendamento em seu nome para esta gira."
+        );
+      }
+
       setSubmitting(false);
       return;
     }
@@ -210,13 +268,9 @@ export function SchedulingForm() {
     setObservacoes("");
 
     // atualiza contador de vagas
-    const { count, error: countError } = await supabase
-      .from("agendamentos")
-      .select("id", { count: "exact", head: true })
-      .eq("gira_id", gira.id);
-
-    if (!countError) {
-      setVagasUsadas(count ?? 0);
+    const ocupadas = await contarOcupadas(gira.id);
+    if (ocupadas !== null) {
+      setVagasUsadas(ocupadas);
     }
 
     setSubmitting(false);
@@ -292,22 +346,68 @@ export function SchedulingForm() {
                 </span>
               </p>
               {vagasRestantes !== null && (
-                <p>
-                  Vagas restantes:{" "}
-                  <span
-                    className={
-                      lotado ? "text-red-600 font-semibold" : "font-semibold"
-                    }
+                <div className="mt-3 space-y-2">
+                  {/* Badge de status: 🟢 abertas · 🟡 últimas vagas · 🔴 lotado */}
+                  <div className="flex items-center justify-center gap-2">
+                    <span
+                      className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${
+                        lotado
+                          ? "bg-red-50 text-red-700"
+                          : quaseLotado
+                            ? "bg-amber-50 text-amber-700"
+                            : "bg-emerald-50 text-emerald-700"
+                      }`}
+                    >
+                      <span
+                        className={`h-2 w-2 rounded-full ${
+                          lotado
+                            ? "bg-red-500"
+                            : quaseLotado
+                              ? "bg-amber-500"
+                              : "bg-emerald-500"
+                        }`}
+                      />
+                      {lotado
+                        ? "Vagas esgotadas"
+                        : quaseLotado
+                          ? `Últimas ${vagasRestantes} ${
+                              vagasRestantes === 1 ? "vaga" : "vagas"
+                            }`
+                          : `${vagasRestantes} vagas disponíveis`}
+                    </span>
+                  </div>
+
+                  {/* Barra de progresso de ocupação */}
+                  <div
+                    className="h-2 w-full overflow-hidden rounded-full bg-muted"
+                    role="progressbar"
+                    aria-valuenow={pctOcupacao}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-label="Ocupação da gira"
                   >
-                    {vagasRestantes}
-                  </span>
-                </p>
-              )}
-              {lotado && (
-                <p className="text-xs text-red-600 mt-1">
-                  As vagas para esta gira estão esgotadas. Acompanhe os próximos avisos
-                  nos canais oficiais do terreiro.
-                </p>
+                    <div
+                      className={`h-full rounded-full transition-all duration-500 ${
+                        lotado
+                          ? "bg-red-500"
+                          : quaseLotado
+                            ? "bg-amber-500"
+                            : "bg-emerald-500"
+                      }`}
+                      style={{ width: `${pctOcupacao}%` }}
+                    />
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    {vagasUsadas ?? 0} de {capacidade} vagas preenchidas
+                  </p>
+
+                  {lotado && (
+                    <p className="text-xs text-red-600">
+                      As vagas para esta gira estão esgotadas. Acompanhe os próximos
+                      avisos nos canais oficiais do terreiro.
+                    </p>
+                  )}
+                </div>
               )}
             </div>
           )}
