@@ -3,7 +3,7 @@ import type { Session } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabaseClient";
 import { SacredSymbol } from "@/components/SacredSymbol";
 import { MetricasDashboard } from "@/components/MetricasDashboard";
-import { LogOut, Printer } from "lucide-react";
+import { LogOut, Printer, Trash2 } from "lucide-react";
 
 type Gira = {
   id: string;
@@ -46,6 +46,7 @@ export function AdminPage() {
   const [capacidadeEditada, setCapacidadeEditada] = useState("");
   const [ativaEditada, setAtivaEditada] = useState(false);
   const [salvandoConfig, setSalvandoConfig] = useState(false);
+  const [deletandoGira, setDeletandoGira] = useState(false);
 
   // campos para criar nova gira
   const [tituloNovo, setTituloNovo] = useState("");
@@ -433,6 +434,62 @@ export function AdminPage() {
     }
   }
 
+  async function handleDeletarGira() {
+    if (!giraSelecionada) return;
+
+    const totalAgendados = agendados.length;
+    const confirmado = window.confirm(
+      `Excluir a gira "${giraSelecionada.titulo}" (${formatarDataBr(
+        giraSelecionada.data
+      )})?\n\n` +
+        (totalAgendados > 0
+          ? `Isso também apaga os ${totalAgendados} agendamento(s) desta gira. `
+          : "") +
+        "Esta ação não pode ser desfeita."
+    );
+    if (!confirmado) return;
+
+    setErro(null);
+    setMensagem(null);
+    setDeletandoGira(true);
+
+    try {
+      // 1) apaga os agendamentos da gira (evita órfãos / violação de FK)
+      const { error: erroAgendamentos } = await supabase
+        .from("agendamentos")
+        .delete()
+        .eq("gira_id", giraSelecionada.id);
+
+      if (erroAgendamentos) {
+        console.error(erroAgendamentos);
+        setErro(`Não foi possível excluir os agendamentos da gira: ${erroAgendamentos.message}`);
+        return;
+      }
+
+      // 2) apaga a gira
+      const { error: erroGira } = await supabase
+        .from("giras")
+        .delete()
+        .eq("id", giraSelecionada.id);
+
+      if (erroGira) {
+        console.error(erroGira);
+        setErro(`Não foi possível excluir a gira: ${erroGira.message}`);
+        return;
+      }
+
+      // 3) atualiza estado local: remove da lista e seleciona outra
+      const idExcluido = giraSelecionada.id;
+      const restantes = giras.filter((g) => g.id !== idExcluido);
+      setGiras(restantes);
+      setGiraSelecionadaId(restantes.length > 0 ? restantes[0].id : null);
+      setAgendados([]);
+      setMensagem("Gira excluída com sucesso.");
+    } finally {
+      setDeletandoGira(false);
+    }
+  }
+
   const agendadosFiltrados = busca.trim()
     ? agendados.filter(
         (a) =>
@@ -708,6 +765,23 @@ export function AdminPage() {
                       : "Salvar configurações da gira"}
                   </button>
                 </form>
+
+                {/* Zona de perigo: excluir a gira e seus agendamentos */}
+                <div className="mt-4 pt-4 border-t border-border/60">
+                  <button
+                    type="button"
+                    onClick={handleDeletarGira}
+                    disabled={deletandoGira || salvandoConfig}
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-md border border-red-300 px-3 py-2.5 text-sm font-medium text-red-700 hover:bg-red-50 transition-colors disabled:opacity-60"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    {deletandoGira ? "Excluindo..." : "Excluir esta gira"}
+                  </button>
+                  <p className="text-[11px] text-muted-foreground mt-1.5">
+                    Remove a gira e todos os agendamentos ligados a ela. Ação
+                    permanente.
+                  </p>
+                </div>
               </div>
             )}
           </div>
