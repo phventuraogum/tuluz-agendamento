@@ -483,28 +483,49 @@ export function AdminPage() {
     setDeletandoGira(true);
 
     try {
-      // 1) apaga os agendamentos da gira (evita órfãos / violação de FK)
-      const { error: erroAgendamentos } = await supabase
-        .from("agendamentos")
-        .delete()
-        .eq("gira_id", giraSelecionada.id);
+      // Caminho preferido: uma única transação no banco. Apagar em duas
+      // chamadas HTTP separadas permite que a primeira funcione e a segunda
+      // falhe, deixando os agendamentos apagados e a gira órfã — perda de
+      // dados sem volta.
+      const { error: erroRpc } = await supabase.rpc("excluir_gira", {
+        p_gira_id: giraSelecionada.id,
+      });
 
-      if (erroAgendamentos) {
-        console.error(erroAgendamentos);
-        setErro(`Não foi possível excluir os agendamentos da gira: ${erroAgendamentos.message}`);
+      // PGRST202 = função ainda não existe no banco (supabase_endurecimento.sql
+      // não foi rodado). Nesse caso caímos no procedimento antigo.
+      const rpcAusente =
+        erroRpc && (erroRpc as { code?: string }).code === "PGRST202";
+
+      if (erroRpc && !rpcAusente) {
+        console.error(erroRpc);
+        setErro(`Não foi possível excluir a gira: ${erroRpc.message}`);
         return;
       }
 
-      // 2) apaga a gira
-      const { error: erroGira } = await supabase
-        .from("giras")
-        .delete()
-        .eq("id", giraSelecionada.id);
+      if (rpcAusente) {
+        const { error: erroAgendamentos } = await supabase
+          .from("agendamentos")
+          .delete()
+          .eq("gira_id", giraSelecionada.id);
 
-      if (erroGira) {
-        console.error(erroGira);
-        setErro(`Não foi possível excluir a gira: ${erroGira.message}`);
-        return;
+        if (erroAgendamentos) {
+          console.error(erroAgendamentos);
+          setErro(
+            `Não foi possível excluir os agendamentos da gira: ${erroAgendamentos.message}`
+          );
+          return;
+        }
+
+        const { error: erroGira } = await supabase
+          .from("giras")
+          .delete()
+          .eq("id", giraSelecionada.id);
+
+        if (erroGira) {
+          console.error(erroGira);
+          setErro(`Não foi possível excluir a gira: ${erroGira.message}`);
+          return;
+        }
       }
 
       // 3) atualiza estado local: remove da lista e seleciona outra

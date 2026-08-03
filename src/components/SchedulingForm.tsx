@@ -278,6 +278,12 @@ export function SchedulingForm() {
         setVagasUsadas(ocupadas ?? capacidade);
       } else if (msg.includes("GIRA_INATIVA") || msg.includes("GIRA_INEXISTENTE")) {
         setErro("Esta gira não está mais disponível para agendamento.");
+      } else if (msg.includes("FLUXO_EXCEDIDO")) {
+        // Freio de vazão do banco: muitos agendamentos na mesma gira em pouco
+        // tempo. Pode ser abuso automatizado ou uma corrida legítima na abertura.
+        setErro(
+          "Muitos agendamentos ao mesmo tempo neste momento. Aguarde alguns instantes e tente novamente."
+        );
       } else if (codigo === "23505") {
         // Índice único no banco pegou a duplicidade (telefone já agendado nesta gira)
         setErro(
