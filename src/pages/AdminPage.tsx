@@ -24,6 +24,32 @@ type Agendamento = {
   created_at: string;
 };
 
+// Os campos abaixo vêm do formulário público, ou seja, de qualquer pessoa na
+// internet. Tudo o que sai do React (impressão e CSV) precisa ser neutralizado
+// antes de virar HTML ou planilha.
+
+const MAPA_ESCAPE_HTML: Record<string, string> = {
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  '"': "&quot;",
+  "'": "&#39;",
+};
+
+/** Escapa HTML. Sem isso, um agendamento com <img onerror=...> executaria
+ *  script na origem do app ao clicar em "Imprimir lista", dando ao atacante
+ *  acesso ao token de sessão da equipe guardado no localStorage. */
+function escaparHtml(valor: unknown): string {
+  return String(valor ?? "").replace(/[&<>"']/g, (c) => MAPA_ESCAPE_HTML[c]);
+}
+
+/** Neutraliza injeção de fórmula em CSV: um campo iniciado por = + - @ (ou
+ *  tab/CR) é interpretado como fórmula pelo Excel/LibreOffice ao abrir o
+ *  arquivo. O apóstrofo à frente força o conteúdo a ser tratado como texto. */
+function neutralizarFormulaCsv(valor: string): string {
+  return /^[=+\-@\t\r]/.test(valor) ? `'${valor}` : valor;
+}
+
 export function AdminPage() {
   const [carregandoGiras, setCarregandoGiras] = useState(true);
   const [giras, setGiras] = useState<Gira[]>([]);
@@ -181,7 +207,7 @@ export function AdminPage() {
       .map((linha) =>
         linha
           .map((campo) => {
-            const valor = campo ?? "";
+            const valor = neutralizarFormulaCsv(campo ?? "");
             const precisaAspas = /[",;\n]/.test(valor);
             if (precisaAspas) {
               return `"${valor.replace(/"/g, '""')}"`;
@@ -214,10 +240,10 @@ export function AdminPage() {
         (a, i) => `
         <tr>
           <td>${i + 1}</td>
-          <td>${a.nome}</td>
+          <td>${escaparHtml(a.nome)}</td>
           <td style="text-align:center">${a.primeira_visita ? "Sim" : "Não"}</td>
-          <td>${a.telefone ?? "—"}</td>
-          <td>${a.observacoes ?? ""}</td>
+          <td>${escaparHtml(a.telefone ?? "—")}</td>
+          <td>${escaparHtml(a.observacoes ?? "")}</td>
           <td style="text-align:center; font-size:16px">&#9744;</td>
         </tr>`
       )
@@ -225,7 +251,7 @@ export function AdminPage() {
 
     const html = `<!DOCTYPE html><html lang="pt-BR"><head>
       <meta charset="utf-8">
-      <title>Lista — ${giraSelecionada.titulo}</title>
+      <title>Lista — ${escaparHtml(giraSelecionada.titulo)}</title>
       <style>
         body { font-family: Arial, sans-serif; font-size: 11px; margin: 24px; color: #222; }
         h1 { font-size: 16px; margin: 0 0 2px; }
@@ -238,7 +264,7 @@ export function AdminPage() {
         @media print { body { margin: 12px; } button { display: none; } }
       </style>
     </head><body>
-      <h1>${giraSelecionada.titulo}${giraSelecionada.tipo ? ` — ${giraSelecionada.tipo}` : ""}</h1>
+      <h1>${escaparHtml(giraSelecionada.titulo)}${giraSelecionada.tipo ? ` — ${escaparHtml(giraSelecionada.tipo)}` : ""}</h1>
       <div class="meta">Data: ${data} &nbsp;|&nbsp; Total: ${agendados.length} agendados &nbsp;|&nbsp; Capacidade: ${giraSelecionada.capacidade}</div>
       <table>
         <thead>
@@ -254,13 +280,16 @@ export function AdminPage() {
         <tbody>${linhas}</tbody>
       </table>
       <div class="footer">Terreiro de Umbanda Luzeiro Santo &mdash; impresso em ${new Date().toLocaleString("pt-BR")}</div>
-      <script>window.onload = () => window.print();<\/script>
     </body></html>`;
 
     const janela = window.open("", "_blank");
     if (!janela) return;
     janela.document.write(html);
     janela.document.close();
+    // A impressão é disparada daqui, e não por um <script> embutido no HTML:
+    // a janela herda o CSP desta página, que não permite script inline.
+    janela.focus();
+    janela.print();
   }
 
   async function handleLoginAdmin(e: FormEvent) {

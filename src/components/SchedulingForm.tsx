@@ -10,6 +10,19 @@ type Gira = {
   ocupadas?: number | null;
 };
 
+// Tamanhos máximos aceitos. Sem eles, um único envio pode carregar centenas de
+// KB por campo e inchar a lista impressa e a base.
+const LIMITES = { nome: 120, telefone: 20, email: 254, observacoes: 500 };
+
+/** Reduz o telefone a dígitos e remove o DDI 55, para que (32) 99999-9999,
+ *  32999999999 e +5532999999999 virem a MESMA string. Sem isso, a mesma
+ *  pessoa reserva quantas vagas quiser só variando a pontuação, porque o
+ *  índice único do banco compara o texto cru. */
+function normalizarTelefone(bruto: string): string {
+  const digitos = bruto.replace(/\D/g, "");
+  return /^55\d{10,11}$/.test(digitos) ? digitos.slice(2) : digitos;
+}
+
 // Conta os agendados de uma gira. Prioriza a função RPC `vagas_gira`, que
 // funciona mesmo com o RLS bloqueando a leitura direta da tabela de
 // agendamentos (dados pessoais). Se a função ainda não existir no banco,
@@ -174,6 +187,26 @@ export function SchedulingForm() {
       return;
     }
 
+    const telefoneFinal = normalizarTelefone(telefone);
+    if (!/^\d{10,11}$/.test(telefoneFinal)) {
+      setErro(
+        "Informe um telefone válido com DDD, por exemplo (32) 99999-9999."
+      );
+      return;
+    }
+
+    if (nome.trim().length > LIMITES.nome) {
+      setErro(`O nome deve ter no máximo ${LIMITES.nome} caracteres.`);
+      return;
+    }
+
+    if (observacoes.trim().length > LIMITES.observacoes) {
+      setErro(
+        `As observações devem ter no máximo ${LIMITES.observacoes} caracteres.`
+      );
+      return;
+    }
+
     if (lotado) {
       setErro("As vagas para esta gira já foram preenchidas.");
       return;
@@ -194,12 +227,11 @@ export function SchedulingForm() {
       return;
     }
 
-    const telefoneFinal = telefone.trim();
     const nomeNormalizado = normalizarNome(nome);
     // Normalização simples para garantir que a busca seja consistente com o que é salvo
 
     // Pré-checagem de duplicidade por telefone na mesma gira.
-    // Não é fatal: se o RLS bloquear esta leitura, seguимos em frente e a
+    // Não é fatal: se o RLS bloquear esta leitura, seguimos em frente e a
     // garantia real fica com o indice unico no banco (erro 23505 tratado abaixo).
     const { data: duplicados, error: dupError } = await supabase
       .from("agendamentos")
@@ -436,6 +468,7 @@ export function SchedulingForm() {
             <input
               id="nome"
               type="text"
+              maxLength={LIMITES.nome}
               className="w-full border rounded-md px-3 py-2 text-sm"
               placeholder="Digite seu nome completo"
               value={nome}
@@ -452,6 +485,7 @@ export function SchedulingForm() {
             <input
               id="telefone"
               type="tel"
+              maxLength={LIMITES.telefone}
               className="w-full border rounded-md px-3 py-2 text-sm"
               placeholder="(00) 00000-0000"
               value={telefone}
@@ -468,6 +502,7 @@ export function SchedulingForm() {
             <input
               id="email"
               type="email"
+              maxLength={LIMITES.email}
               className="w-full border rounded-md px-3 py-2 text-sm"
               placeholder="seuemail@exemplo.com"
               value={email}
@@ -517,6 +552,7 @@ export function SchedulingForm() {
             </p>
             <textarea
               id="observacoes"
+              maxLength={LIMITES.observacoes}
               className="w-full border rounded-md px-3 py-2 text-sm min-h-[96px]"
               placeholder="Escreva aqui suas observações..."
               value={observacoes}
