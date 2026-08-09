@@ -123,10 +123,17 @@ export function SchedulingForm() {
     };
   }, []);
 
+  // Limiar só para o status visual ("últimas vagas") — números não são exibidos.
+  const LIMITE_ULTIMAS_VAGAS = 5;
+
   const capacidade = gira?.capacidade ?? 0;
   const vagasRestantes =
     vagasUsadas !== null && gira ? Math.max(capacidade - vagasUsadas, 0) : null;
   const lotado = vagasRestantes !== null && vagasRestantes <= 0;
+  const quaseLotado =
+    vagasRestantes !== null &&
+    vagasRestantes > 0 &&
+    vagasRestantes <= LIMITE_ULTIMAS_VAGAS;
 
   function normalizarNome(nomeBruto: string): string {
     return nomeBruto
@@ -336,11 +343,40 @@ export function SchedulingForm() {
                   {formatarDataBr(gira.data)}
                 </span>
               </p>
-              {lotado && (
-                <p className="mt-3 text-xs text-red-600">
-                  As vagas para esta gira estão esgotadas. Acompanhe os próximos
-                  avisos nos canais oficiais do terreiro.
-                </p>
+              {vagasRestantes !== null && (
+                <div className="mt-3 flex flex-col items-center gap-2">
+                  <span
+                    className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${
+                      lotado
+                        ? "bg-red-50 text-red-700"
+                        : quaseLotado
+                          ? "bg-amber-50 text-amber-700"
+                          : "bg-emerald-50 text-emerald-700"
+                    }`}
+                  >
+                    <span
+                      className={`h-2 w-2 rounded-full ${
+                        lotado
+                          ? "bg-red-500"
+                          : quaseLotado
+                            ? "bg-amber-500"
+                            : "bg-emerald-500"
+                      }`}
+                    />
+                    {lotado
+                      ? "Vagas esgotadas"
+                      : quaseLotado
+                        ? "Últimas vagas"
+                        : "Vagas disponíveis"}
+                  </span>
+
+                  {lotado && (
+                    <p className="text-xs text-red-600">
+                      As vagas para esta gira estão esgotadas. Acompanhe os
+                      próximos avisos nos canais oficiais do terreiro.
+                    </p>
+                  )}
+                </div>
               )}
             </div>
           )}
