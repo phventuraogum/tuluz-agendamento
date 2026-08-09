@@ -123,7 +123,7 @@ export function SchedulingForm() {
     };
   }, []);
 
-  // A partir de quantas vagas restantes mostramos o aviso de "últimas vagas"
+  // Limiar só para o status visual ("últimas vagas") — números não são exibidos.
   const LIMITE_ULTIMAS_VAGAS = 5;
 
   const capacidade = gira?.capacidade ?? 0;
@@ -134,10 +134,6 @@ export function SchedulingForm() {
     vagasRestantes !== null &&
     vagasRestantes > 0 &&
     vagasRestantes <= LIMITE_ULTIMAS_VAGAS;
-  const pctOcupacao =
-    vagasUsadas !== null && capacidade > 0
-      ? Math.min(Math.round((vagasUsadas / capacidade) * 100), 100)
-      : 0;
 
   function normalizarNome(nomeBruto: string): string {
     return nomeBruto
@@ -348,65 +344,36 @@ export function SchedulingForm() {
                 </span>
               </p>
               {vagasRestantes !== null && (
-                <div className="mt-3 space-y-2">
-                  {/* Badge de status: 🟢 abertas · 🟡 últimas vagas · 🔴 lotado */}
-                  <div className="flex items-center justify-center gap-2">
-                    <span
-                      className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${
-                        lotado
-                          ? "bg-red-50 text-red-700"
-                          : quaseLotado
-                            ? "bg-amber-50 text-amber-700"
-                            : "bg-emerald-50 text-emerald-700"
-                      }`}
-                    >
-                      <span
-                        className={`h-2 w-2 rounded-full ${
-                          lotado
-                            ? "bg-red-500"
-                            : quaseLotado
-                              ? "bg-amber-500"
-                              : "bg-emerald-500"
-                        }`}
-                      />
-                      {lotado
-                        ? "Vagas esgotadas"
+                <div className="mt-3 flex flex-col items-center gap-2">
+                  <span
+                    className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${
+                      lotado
+                        ? "bg-red-50 text-red-700"
                         : quaseLotado
-                          ? `Últimas ${vagasRestantes} ${
-                              vagasRestantes === 1 ? "vaga" : "vagas"
-                            }`
-                          : `${vagasRestantes} vagas disponíveis`}
-                    </span>
-                  </div>
-
-                  {/* Barra de progresso de ocupação */}
-                  <div
-                    className="h-2 w-full overflow-hidden rounded-full bg-muted"
-                    role="progressbar"
-                    aria-valuenow={pctOcupacao}
-                    aria-valuemin={0}
-                    aria-valuemax={100}
-                    aria-label="Ocupação da gira"
+                          ? "bg-amber-50 text-amber-700"
+                          : "bg-emerald-50 text-emerald-700"
+                    }`}
                   >
-                    <div
-                      className={`h-full rounded-full transition-all duration-500 ${
+                    <span
+                      className={`h-2 w-2 rounded-full ${
                         lotado
                           ? "bg-red-500"
                           : quaseLotado
                             ? "bg-amber-500"
                             : "bg-emerald-500"
                       }`}
-                      style={{ width: `${pctOcupacao}%` }}
                     />
-                  </div>
-                  <p className="text-[11px] text-muted-foreground">
-                    {vagasUsadas ?? 0} de {capacidade} vagas preenchidas
-                  </p>
+                    {lotado
+                      ? "Vagas esgotadas"
+                      : quaseLotado
+                        ? "Últimas vagas"
+                        : "Vagas disponíveis"}
+                  </span>
 
                   {lotado && (
                     <p className="text-xs text-red-600">
-                      As vagas para esta gira estão esgotadas. Acompanhe os próximos
-                      avisos nos canais oficiais do terreiro.
+                      As vagas para esta gira estão esgotadas. Acompanhe os
+                      próximos avisos nos canais oficiais do terreiro.
                     </p>
                   )}
                 </div>
