@@ -231,37 +231,63 @@ export function AdminPage() {
     URL.revokeObjectURL(url);
   }
 
+  // Quantas linhas em branco a lista impressa traz no fim, para anotar à mão
+  // desistências e encaixes de última hora na própria gira.
+  const LINHAS_EM_BRANCO_IMPRESSAO = 10;
+
   function imprimirLista() {
     if (!giraSelecionada || agendados.length === 0) return;
 
     const data = formatarDataBr(giraSelecionada.data);
+
+    // Linhas dos agendados. Sem Telefone (não vai para o papel que circula na
+    // gira) e com uma coluna vazia "Guia que atendeu" para preencher à mão.
+    // "Sim" da primeira visita em negrito para saltar aos olhos da equipe.
     const linhas = agendados
-      .map(
-        (a, i) => `
+      .map((a, i) => {
+        const visita = a.primeira_visita
+          ? '<strong>Sim</strong>'
+          : "Não";
+        return `
         <tr>
-          <td>${i + 1}</td>
+          <td class="c">${i + 1}</td>
           <td>${escaparHtml(a.nome)}</td>
-          <td style="text-align:center">${a.primeira_visita ? "Sim" : "Não"}</td>
-          <td>${escaparHtml(a.telefone ?? "—")}</td>
+          <td class="c">${visita}</td>
           <td>${escaparHtml(a.observacoes ?? "")}</td>
-          <td style="text-align:center; font-size:16px">&#9744;</td>
-        </tr>`
-      )
+          <td></td>
+          <td class="c chk">&#9744;</td>
+        </tr>`;
+      })
       .join("");
+
+    // Linhas em branco numeradas na sequência, para encaixes de última hora.
+    const inicioBranco = agendados.length + 1;
+    const linhasBranco = Array.from(
+      { length: LINHAS_EM_BRANCO_IMPRESSAO },
+      (_, k) => `
+        <tr class="vazia">
+          <td class="c">${inicioBranco + k}</td>
+          <td></td><td></td><td></td><td></td>
+          <td class="c chk">&#9744;</td>
+        </tr>`
+    ).join("");
 
     const html = `<!DOCTYPE html><html lang="pt-BR"><head>
       <meta charset="utf-8">
       <title>Lista — ${escaparHtml(giraSelecionada.titulo)}</title>
       <style>
         body { font-family: Arial, sans-serif; font-size: 11px; margin: 24px; color: #222; }
-        h1 { font-size: 16px; margin: 0 0 2px; }
+        h1 { font-size: 16px; margin: 0 0 2px; color: #8a5a2b; }
         .meta { font-size: 11px; color: #555; margin-bottom: 14px; }
         table { width: 100%; border-collapse: collapse; }
         th { background: #f3ede4; text-align: left; padding: 5px 8px; border: 1px solid #ccc; font-size: 10px; text-transform: uppercase; letter-spacing: .4px; }
         td { padding: 5px 8px; border: 1px solid #ddd; vertical-align: top; }
+        td.c { text-align: center; }
+        td.chk { font-size: 16px; }
         tr:nth-child(even) td { background: #fafaf8; }
+        tr.vazia td { height: 26px; }
         .footer { margin-top: 16px; font-size: 10px; color: #999; }
-        @media print { body { margin: 12px; } button { display: none; } }
+        @media print { body { margin: 12px; } button { display: none; } thead { display: table-header-group; } }
       </style>
     </head><body>
       <h1>${escaparHtml(giraSelecionada.titulo)}${giraSelecionada.tipo ? ` — ${escaparHtml(giraSelecionada.tipo)}` : ""}</h1>
@@ -272,12 +298,12 @@ export function AdminPage() {
             <th style="width:30px">#</th>
             <th>Nome</th>
             <th style="width:60px">1ª visita</th>
-            <th style="width:110px">Telefone</th>
             <th>Observações</th>
+            <th style="width:150px">Guia que atendeu</th>
             <th style="width:55px">Presente</th>
           </tr>
         </thead>
-        <tbody>${linhas}</tbody>
+        <tbody>${linhas}${linhasBranco}</tbody>
       </table>
       <div class="footer">Terreiro de Umbanda Luzeiro Santo &mdash; impresso em ${new Date().toLocaleString("pt-BR")}</div>
     </body></html>`;
