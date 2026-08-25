@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { Check } from "lucide-react";
 
@@ -13,6 +13,48 @@ type Gira = {
 // Tamanhos máximos aceitos. Sem eles, um único envio pode carregar centenas de
 // KB por campo e inchar a lista impressa e a base.
 const LIMITES = { nome: 120, telefone: 20, email: 254, observacoes: 500 };
+
+// Anti-bot (Cloudflare Turnstile). Só liga quando a chave pública estiver
+// configurada no ambiente (VITE_TURNSTILE_SITE_KEY). Sem ela, o formulário
+// segue no fluxo direto atual — assim o rollout não quebra nada até a Edge
+// Function estar no ar. Ver supabase/functions/agendar e o runbook do PR.
+const TURNSTILE_SITE_KEY = import.meta.env.VITE_TURNSTILE_SITE_KEY as
+  | string
+  | undefined;
+const ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
+const AGENDAR_ENDPOINT = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/agendar`;
+const usarAntiBot = !!TURNSTILE_SITE_KEY;
+
+declare global {
+  interface Window {
+    turnstile?: {
+      render: (el: HTMLElement, opts: Record<string, unknown>) => string;
+      reset: (id?: string) => void;
+    };
+  }
+}
+
+// Mapeia os códigos de erro devolvidos pela Edge Function para mensagens.
+function mensagemErroFuncao(codigo: string): string {
+  switch (codigo) {
+    case "CAPTCHA_INVALIDO":
+      return "Não foi possível confirmar que você não é um robô. Tente novamente.";
+    case "CAPACIDADE_ATINGIDA":
+      return "As vagas para esta gira foram preenchidas. Acompanhe os próximos avisos nos canais oficiais do terreiro.";
+    case "GIRA_INDISPONIVEL":
+      return "Esta gira não está mais disponível para agendamento.";
+    case "FLUXO_EXCEDIDO":
+      return "Muitos agendamentos ao mesmo tempo neste momento. Aguarde alguns instantes e tente novamente.";
+    case "DUPLICADO":
+      return "Já encontramos um agendamento com este telefone para esta gira. Caso precise ajustar algo, por favor fale com a organização.";
+    case "TELEFONE_INVALIDO":
+      return "Informe um telefone válido com DDD, por exemplo (32) 99999-9999.";
+    case "ORIGEM_NAO_AUTORIZADA":
+      return "Envio bloqueado por segurança. Use o site oficial do terreiro.";
+    default:
+      return "Não foi possível concluir seu agendamento. Tente novamente em alguns instantes.";
+  }
+}
 
 /** Reduz o telefone a dígitos e remove o DDI 55, para que (32) 99999-9999,
  *  32999999999 e +5532999999999 virem a MESMA string. Sem isso, a mesma
@@ -64,6 +106,11 @@ export function SchedulingForm() {
 
   // novo: controle da tela de confirmação
   const [isConfirmed, setIsConfirmed] = useState(false);
+
+  // Turnstile (anti-bot): container, id do widget e token resolvido
+  const turnstileRef = useRef<HTMLDivElement | null>(null);
+  const widgetIdRef = useRef<string | null>(null);
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
 
   // carrega gira ativa + vagas
   useEffect(() => {
@@ -152,6 +199,50 @@ export function SchedulingForm() {
       ? Math.min(Math.round((vagasUsadas / capacidade) * 100), 100)
       : 0;
 
+  // Carrega o script do Turnstile e renderiza o widget quando o formulário está
+  // visível (não confirmado, não lotado). O token resolvido é exigido no envio.
+  useEffect(() => {
+    if (!usarAntiBot || isConfirmed || loadingGira || lotado) return;
+
+    let cancelado = false;
+    const renderizar = () => {
+      if (cancelado || !turnstileRef.current || !window.turnstile) return;
+      // Se o container remontou (voltou da tela de confirmação), o widget antigo
+      // sumiu do DOM — descarta o id velho e renderiza de novo.
+      if (widgetIdRef.current && turnstileRef.current.childElementCount === 0) {
+        widgetIdRef.current = null;
+      }
+      if (widgetIdRef.current) return;
+      widgetIdRef.current = window.turnstile.render(turnstileRef.current, {
+        sitekey: TURNSTILE_SITE_KEY,
+        callback: (t: string) => setTurnstileToken(t),
+        "expired-callback": () => setTurnstileToken(null),
+        "error-callback": () => setTurnstileToken(null),
+      });
+    };
+
+    if (window.turnstile) {
+      renderizar();
+    } else {
+      const ID = "cf-turnstile-script";
+      let s = document.getElementById(ID) as HTMLScriptElement | null;
+      if (!s) {
+        s = document.createElement("script");
+        s.id = ID;
+        s.src =
+          "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+        s.async = true;
+        s.defer = true;
+        document.head.appendChild(s);
+      }
+      s.addEventListener("load", renderizar);
+    }
+
+    return () => {
+      cancelado = true;
+    };
+  }, [isConfirmed, loadingGira, lotado]);
+
   function normalizarNome(nomeBruto: string): string {
     return nomeBruto
       .trim()
@@ -209,6 +300,75 @@ export function SchedulingForm() {
 
     if (lotado) {
       setErro("As vagas para esta gira já foram preenchidas.");
+      return;
+    }
+
+    // ── Caminho anti-bot (Edge Function + Turnstile) ──────────────────────
+    // Quando ligado, o envio NÃO vai direto ao Supabase: passa pela função
+    // `agendar`, que valida o CAPTCHA e insere com service role. É o que impede
+    // o bypass do site por automação apontado no pentest (F1).
+    if (usarAntiBot) {
+      if (!turnstileToken) {
+        setErro("Confirme que você não é um robô para concluir o agendamento.");
+        return;
+      }
+      setSubmitting(true);
+      try {
+        const resp = await fetch(AGENDAR_ENDPOINT, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            apikey: ANON_KEY,
+            Authorization: `Bearer ${ANON_KEY}`,
+          },
+          body: JSON.stringify({
+            gira_id: gira.id,
+            nome: nome.trim(),
+            telefone: telefone.trim(),
+            email: email.trim() || null,
+            primeira_visita: primeiraVez === "sim",
+            observacoes: observacoes.trim() || null,
+            turnstileToken,
+          }),
+        });
+        const dados = (await resp.json().catch(() => ({}))) as {
+          error?: string;
+        };
+
+        if (!resp.ok) {
+          const codigo = dados.error ?? "";
+          setErro(mensagemErroFuncao(codigo));
+          if (codigo === "CAPACIDADE_ATINGIDA") {
+            const ocupadas = await contarOcupadas(gira.id);
+            setVagasUsadas(ocupadas ?? capacidade);
+          }
+          // reseta o desafio para a pessoa poder tentar de novo
+          window.turnstile?.reset(widgetIdRef.current ?? undefined);
+          setTurnstileToken(null);
+          setSubmitting(false);
+          return;
+        }
+      } catch (err) {
+        console.error(err);
+        setErro(
+          "Não foi possível concluir seu agendamento. Verifique sua conexão e tente novamente."
+        );
+        setSubmitting(false);
+        return;
+      }
+
+      // sucesso
+      setMensagem("Seu agendamento foi registrado com sucesso para esta gira.");
+      setNome("");
+      setTelefone("");
+      setEmail("");
+      setPrimeiraVez("sim");
+      setObservacoes("");
+      setTurnstileToken(null);
+      const ocupadas = await contarOcupadas(gira.id);
+      if (ocupadas !== null) setVagasUsadas(ocupadas);
+      setSubmitting(false);
+      setIsConfirmed(true);
       return;
     }
 
@@ -567,9 +727,21 @@ export function SchedulingForm() {
             />
           </div>
 
+          {usarAntiBot && (
+            <div className="mt-2 flex justify-center">
+              {/* Widget do Cloudflare Turnstile é renderizado aqui via JS */}
+              <div ref={turnstileRef} />
+            </div>
+          )}
+
           <button
             type="submit"
-            disabled={loadingGira || lotado || submitting}
+            disabled={
+              loadingGira ||
+              lotado ||
+              submitting ||
+              (usarAntiBot && !turnstileToken)
+            }
             className="w-full py-2.5 rounded-md bg-primary text-primary-foreground font-medium text-sm disabled:opacity-70 disabled:cursor-not-allowed mt-2"
           >
             {submitting ? "Enviando..." : "Confirmar agendamento"}
