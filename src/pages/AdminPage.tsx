@@ -24,6 +24,32 @@ type Agendamento = {
   created_at: string;
 };
 
+// Os campos abaixo vêm do formulário público, ou seja, de qualquer pessoa na
+// internet. Tudo o que sai do React (impressão e CSV) precisa ser neutralizado
+// antes de virar HTML ou planilha.
+
+const MAPA_ESCAPE_HTML: Record<string, string> = {
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  '"': "&quot;",
+  "'": "&#39;",
+};
+
+/** Escapa HTML. Sem isso, um agendamento com <img onerror=...> executaria
+ *  script na origem do app ao clicar em "Imprimir lista", dando ao atacante
+ *  acesso ao token de sessão da equipe guardado no localStorage. */
+function escaparHtml(valor: unknown): string {
+  return String(valor ?? "").replace(/[&<>"']/g, (c) => MAPA_ESCAPE_HTML[c]);
+}
+
+/** Neutraliza injeção de fórmula em CSV: um campo iniciado por = + - @ (ou
+ *  tab/CR) é interpretado como fórmula pelo Excel/LibreOffice ao abrir o
+ *  arquivo. O apóstrofo à frente força o conteúdo a ser tratado como texto. */
+function neutralizarFormulaCsv(valor: string): string {
+  return /^[=+\-@\t\r]/.test(valor) ? `'${valor}` : valor;
+}
+
 export function AdminPage() {
   const [carregandoGiras, setCarregandoGiras] = useState(true);
   const [giras, setGiras] = useState<Gira[]>([]);
@@ -181,7 +207,7 @@ export function AdminPage() {
       .map((linha) =>
         linha
           .map((campo) => {
-            const valor = campo ?? "";
+            const valor = neutralizarFormulaCsv(campo ?? "");
             const precisaAspas = /[",;\n]/.test(valor);
             if (precisaAspas) {
               return `"${valor.replace(/"/g, '""')}"`;
@@ -205,40 +231,66 @@ export function AdminPage() {
     URL.revokeObjectURL(url);
   }
 
+  // Quantas linhas em branco a lista impressa traz no fim, para anotar à mão
+  // desistências e encaixes de última hora na própria gira.
+  const LINHAS_EM_BRANCO_IMPRESSAO = 10;
+
   function imprimirLista() {
     if (!giraSelecionada || agendados.length === 0) return;
 
     const data = formatarDataBr(giraSelecionada.data);
+
+    // Linhas dos agendados. Sem Telefone (não vai para o papel que circula na
+    // gira) e com uma coluna vazia "Guia que atendeu" para preencher à mão.
+    // "Sim" da primeira visita em negrito para saltar aos olhos da equipe.
     const linhas = agendados
-      .map(
-        (a, i) => `
+      .map((a, i) => {
+        const visita = a.primeira_visita
+          ? '<strong>Sim</strong>'
+          : "Não";
+        return `
         <tr>
-          <td>${i + 1}</td>
-          <td>${a.nome}</td>
-          <td style="text-align:center">${a.primeira_visita ? "Sim" : "Não"}</td>
-          <td>${a.telefone ?? "—"}</td>
-          <td>${a.observacoes ?? ""}</td>
-          <td style="text-align:center; font-size:16px">&#9744;</td>
-        </tr>`
-      )
+          <td class="c">${i + 1}</td>
+          <td>${escaparHtml(a.nome)}</td>
+          <td class="c">${visita}</td>
+          <td>${escaparHtml(a.observacoes ?? "")}</td>
+          <td></td>
+          <td class="c chk">&#9744;</td>
+        </tr>`;
+      })
       .join("");
+
+    // Linhas em branco numeradas na sequência, para encaixes de última hora.
+    const inicioBranco = agendados.length + 1;
+    const linhasBranco = Array.from(
+      { length: LINHAS_EM_BRANCO_IMPRESSAO },
+      (_, k) => `
+        <tr class="vazia">
+          <td class="c">${inicioBranco + k}</td>
+          <td></td><td></td><td></td><td></td>
+          <td class="c chk">&#9744;</td>
+        </tr>`
+    ).join("");
 
     const html = `<!DOCTYPE html><html lang="pt-BR"><head>
       <meta charset="utf-8">
-      <title>Lista — ${giraSelecionada.titulo}</title>
+      <title>Lista — ${escaparHtml(giraSelecionada.titulo)}</title>
       <style>
         body { font-family: Arial, sans-serif; font-size: 11px; margin: 24px; color: #222; }
-        h1 { font-size: 16px; margin: 0 0 2px; }
+        h1 { font-size: 16px; margin: 0 0 2px; color: #8a5a2b; }
         .meta { font-size: 11px; color: #555; margin-bottom: 14px; }
         table { width: 100%; border-collapse: collapse; }
         th { background: #f3ede4; text-align: left; padding: 5px 8px; border: 1px solid #ccc; font-size: 10px; text-transform: uppercase; letter-spacing: .4px; }
         td { padding: 5px 8px; border: 1px solid #ddd; vertical-align: top; }
+        td.c { text-align: center; }
+        td.chk { font-size: 16px; }
         tr:nth-child(even) td { background: #fafaf8; }
+        tr.vazia td { height: 26px; }
         .footer { margin-top: 16px; font-size: 10px; color: #999; }
-        @media print { body { margin: 12px; } button { display: none; } }
+        @media print { body { margin: 12px; } button { display: none; } thead { display: table-header-group; } }
       </style>
     </head><body>
-      <h1>${giraSelecionada.titulo}${giraSelecionada.tipo ? ` — ${giraSelecionada.tipo}` : ""}</h1>
+      <h1>${escaparHtml(giraSelecionada.titulo)}${giraSelecionada.tipo ? ` — ${escaparHtml(giraSelecionada.tipo)}` : ""}</h1>
       <div class="meta">Data: ${data} &nbsp;|&nbsp; Total: ${agendados.length} agendados &nbsp;|&nbsp; Capacidade: ${giraSelecionada.capacidade}</div>
       <table>
         <thead>
@@ -246,21 +298,24 @@ export function AdminPage() {
             <th style="width:30px">#</th>
             <th>Nome</th>
             <th style="width:60px">1ª visita</th>
-            <th style="width:110px">Telefone</th>
             <th>Observações</th>
+            <th style="width:150px">Guia que atendeu</th>
             <th style="width:55px">Presente</th>
           </tr>
         </thead>
-        <tbody>${linhas}</tbody>
+        <tbody>${linhas}${linhasBranco}</tbody>
       </table>
       <div class="footer">Terreiro de Umbanda Luzeiro Santo &mdash; impresso em ${new Date().toLocaleString("pt-BR")}</div>
-      <script>window.onload = () => window.print();<\/script>
     </body></html>`;
 
     const janela = window.open("", "_blank");
     if (!janela) return;
     janela.document.write(html);
     janela.document.close();
+    // A impressão é disparada daqui, e não por um <script> embutido no HTML:
+    // a janela herda o CSP desta página, que não permite script inline.
+    janela.focus();
+    janela.print();
   }
 
   async function handleLoginAdmin(e: FormEvent) {
@@ -454,28 +509,49 @@ export function AdminPage() {
     setDeletandoGira(true);
 
     try {
-      // 1) apaga os agendamentos da gira (evita órfãos / violação de FK)
-      const { error: erroAgendamentos } = await supabase
-        .from("agendamentos")
-        .delete()
-        .eq("gira_id", giraSelecionada.id);
+      // Caminho preferido: uma única transação no banco. Apagar em duas
+      // chamadas HTTP separadas permite que a primeira funcione e a segunda
+      // falhe, deixando os agendamentos apagados e a gira órfã — perda de
+      // dados sem volta.
+      const { error: erroRpc } = await supabase.rpc("excluir_gira", {
+        p_gira_id: giraSelecionada.id,
+      });
 
-      if (erroAgendamentos) {
-        console.error(erroAgendamentos);
-        setErro(`Não foi possível excluir os agendamentos da gira: ${erroAgendamentos.message}`);
+      // PGRST202 = função ainda não existe no banco (supabase_endurecimento.sql
+      // não foi rodado). Nesse caso caímos no procedimento antigo.
+      const rpcAusente =
+        erroRpc && (erroRpc as { code?: string }).code === "PGRST202";
+
+      if (erroRpc && !rpcAusente) {
+        console.error(erroRpc);
+        setErro(`Não foi possível excluir a gira: ${erroRpc.message}`);
         return;
       }
 
-      // 2) apaga a gira
-      const { error: erroGira } = await supabase
-        .from("giras")
-        .delete()
-        .eq("id", giraSelecionada.id);
+      if (rpcAusente) {
+        const { error: erroAgendamentos } = await supabase
+          .from("agendamentos")
+          .delete()
+          .eq("gira_id", giraSelecionada.id);
 
-      if (erroGira) {
-        console.error(erroGira);
-        setErro(`Não foi possível excluir a gira: ${erroGira.message}`);
-        return;
+        if (erroAgendamentos) {
+          console.error(erroAgendamentos);
+          setErro(
+            `Não foi possível excluir os agendamentos da gira: ${erroAgendamentos.message}`
+          );
+          return;
+        }
+
+        const { error: erroGira } = await supabase
+          .from("giras")
+          .delete()
+          .eq("id", giraSelecionada.id);
+
+        if (erroGira) {
+          console.error(erroGira);
+          setErro(`Não foi possível excluir a gira: ${erroGira.message}`);
+          return;
+        }
       }
 
       // 3) atualiza estado local: remove da lista e seleciona outra
